@@ -1,0 +1,567 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Template for DyanamoDb Table Creation.
+
+#Parameters for Dyanomodb, s3, lambda and API Gateway.
+Parameters:
+  DynamoDBTableName:  
+    Type: String
+    Description: Name of the Dynamodb Table. 
+    AllowedPattern: ^[a-zA-Z]+$
+    ConstraintDescription: Only letters allowed.
+    Default: PhotoMetadata
+  PrimaryKeyName:
+    Type: String
+    Description: Name of primary key.
+    AllowedPattern: ^[a-z]+$
+    ConstraintDescription: Only small letters allowed.
+    Default: imageid
+  BucketName:  
+    Type: String
+    Description: Name of the bucket. 
+    AllowedPattern: ^[a-z]+$
+    ConstraintDescription: Only small letters allowed.
+    Default: akss3bucket
+  ImageUploadLambdaName:
+    Type: String
+    Description: Name of image uploade lambda.
+    AllowedPattern: ^.*[^0-9]$
+    ConstraintDescription: Must end with non-numeric character.
+    Default: ImageUploadLambda
+  ImageApproveLambdaName:
+    Type: String
+    Description: Name of image uploade lambda.
+    AllowedPattern: ^.*[^0-9]$
+    ConstraintDescription: Must end with non-numeric character.
+    Default: ImageApproveLambda
+  GetMetaDataLambdaName:
+    Type: String
+    Description: Name of image uploade lambda.
+    AllowedPattern: ^.*[^0-9]$
+    ConstraintDescription: Must end with non-numeric character.
+    Default: GetMetaDataLambda
+  APIName:  
+    Type: String
+    Description: Name of API. 
+    AllowedPattern: ^[a-zA-Z]+$
+    ConstraintDescription: Only letters allowed.
+    Default: ImageUpload
+  EnvironmentName:
+    Type: String
+    Description: Name of Stage.
+    AllowedPattern: ^[a-zA-Z]+$
+    ConstraintDescription: Only letters allowed.
+    Default: test
+  UsageName:
+    Type: String
+    Description: Name of Usage Plan.
+    AllowedPattern: ^[a-zA-Z]+$
+    ConstraintDescription: Only letters allowed.
+    Default: test
+
+#Resource definitions    
+Resources:
+#Dynamodb resource definiton
+  DynamoDBTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: !Sub ${DynamoDBTableName}
+      AttributeDefinitions:
+        - AttributeName: !Sub ${PrimaryKeyName}
+          AttributeType: S
+      KeySchema:
+        - AttributeName: !Sub ${PrimaryKeyName}
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: '5'
+        WriteCapacityUnits: '5'
+
+#S3 bucket resource definiton
+  UploadBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub com-aks-bucket-imageupload-${BucketName}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+        
+
+#Lambda & Role definition for Uploading Image
+  ImageUploadLambdaRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub lambda-role-${ImageUploadLambdaName}
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+            - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+              - lambda.amazonaws.com
+        Version: 2012-10-17
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::772827090549:policy/DynamoDbWriteFull
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Path: /
+  ImageUploadLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub lambda-function-${ImageUploadLambdaName}
+      Description: LambdaFunction of python3.8.
+      Runtime: python3.8
+      Code:
+        ZipFile: !Sub |
+          import json
+          import base64
+          import boto3
+
+          s3 = boto3.client('s3')
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table('${DynamoDBTable}')
+
+          def lambda_handler(event, context):
+              # TODO implement
+              filebody = event['body']
+              
+              base64body = base64.b64decode(filebody);
+              
+              filesize = len(base64body)
+              
+              if filesize > 2000000:
+                  return {'ErrorMessage' : "filesize should not be more than 2 MB"}
+                  
+              for i in range(10000):
+                  if base64body[i] == 13 and base64body[i+1] == 10 and base64body[i+2] == 13 and base64body[i+3] == 10 :
+                      break;
+                    
+              file = base64body[i+4:]
+
+              filedetails = base64body[:i].split(b'\n')
+              filename = filedetails[1].split(b';')[2].split(b'"')[1].decode('utf-8')
+              filetype = filename.split(".")[1]
+                  
+              if filetype != "jpeg" and filetype != "pdf" and filetype != "png":
+                  return {'ErrorMessage' : "file type should be PNG, PDF or JPEG"}
+                  
+              contentType = filedetails[2].split(b": ")[1].decode('utf-8')
+              
+              s3.put_object(Bucket='com-aks-bucket-imageupload-${BucketName}',Body=file,Key=filename,ContentType=contentType)
+              
+              table.put_item(Item={
+                  '${PrimaryKeyName}': filename,
+                  'filetype': filetype,
+                  'filesize': filesize,
+                  'status':'draft'
+              })
+              
+              return filename
+
+      Handler: index.lambda_handler
+      Role: !GetAtt
+          - ImageUploadLambdaRole
+          - Arn
+    DependsOn:
+      - ImageUploadLambdaRole
+      - UploadBucket
+      - DynamoDBTable
+
+#Lambda & Role definition for Approving Image
+  ApproveLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub lambda-role-${ImageApproveLambdaName}
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+            - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+              - lambda.amazonaws.com
+        Version: 2012-10-17
+      ManagedPolicyArns:
+        - arn:aws:iam::772827090549:policy/DynamoDbWriteFull
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Path: /
+  ApproveLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub lambda-function-${ImageApproveLambdaName}
+      Description: LambdaFunction of python3.8.
+      Runtime: python3.8
+      Code:
+        ZipFile: !Sub |
+          import json
+          import boto3
+
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table('${DynamoDBTableName}')
+
+          def lambda_handler(event, context):
+              
+              table.update_item(Key={
+                  '${PrimaryKeyName}':event['params']['querystring']['imageid']
+                  },
+                  UpdateExpression="set #status=:statusVal",
+                  ExpressionAttributeNames={
+                  '#status': 'status'
+                  },
+                  ExpressionAttributeValues={
+                      ":statusVal": "approved"
+                  }
+                  )
+              return "Image Approved"
+      Handler: index.lambda_handler
+      Role: !GetAtt
+          - ApproveLambdaRole
+          - Arn
+    DependsOn:
+      - ApproveLambdaRole
+      - UploadBucket
+      - DynamoDBTable
+
+#Lambda & Role definition for Getting meta data of Image
+  GetMetaDataLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub lambda-role-${GetMetaDataLambdaName}
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+            - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+              - lambda.amazonaws.com
+        Version: 2012-10-17
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonDynamoDBReadOnlyAccess
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Path: /
+  GetMetaDataLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub lambda-function-${GetMetaDataLambdaName}
+      Description: LambdaFunction of python3.8.
+      Runtime: python3.8
+      Code:
+        ZipFile: !Sub |
+          import json
+          import boto3
+
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table('${DynamoDBTableName}')
+
+          def lambda_handler(event, context):
+              response = table.get_item(Key={
+                  '${PrimaryKeyName}':event['params']['querystring']['imageid']
+              })
+              
+              return response['Item']
+      Handler: index.lambda_handler
+      Role: !GetAtt
+          - GetMetaDataLambdaRole
+          - Arn
+    DependsOn:
+      - GetMetaDataLambdaRole
+      - UploadBucket
+      - DynamoDBTable
+
+#API Gateway
+  APIGatewayRestAPI:
+    Type: 'AWS::ApiGateway::RestApi'
+    Properties:
+      Description: Image Upload API and Store Metadata.
+      Name: !Sub ${APIName}
+      ApiKeySourceType: HEADER
+      BinaryMediaTypes:
+        - multipart/form-data
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  #API Gateway Resource definiton for ImageUpload.
+  UploadImageAPIGatewayResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      ParentId: !GetAtt
+        - APIGatewayRestAPI
+        - RootResourceId
+      PathPart: upload
+      RestApiId: !Ref APIGatewayRestAPI
+    DependsOn:
+      - APIGatewayRestAPI
+
+  #POST method definition for image upload. 
+  ImageUploadAPIGatewayPOSTMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      HttpMethod: POST
+      ResourceId: !Ref UploadImageAPIGatewayResource 
+      RestApiId: !Ref APIGatewayRestAPI
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        ContentHandling: CONVERT_TO_TEXT
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: ''
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+
+        Uri: !Sub 
+          - >- 
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${uploadLambdaArn}/invocations
+          - uploadLambdaArn: !GetAtt ImageUploadLambdaFunction.Arn
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        RequestTemplates:
+          multipart/form-data: |
+           #set($allParams = $input.params())
+            {
+            "body" : "$input.body",
+            "params" : {
+            #foreach($type in $allParams.keySet())
+                #set($params = $allParams.get($type))
+            "$type" : {
+                #foreach($paramName in $params.keySet())
+                "$paramName" : "$util.escapeJavaScript($params.get($paramName))"
+                    #if($foreach.hasNext),#end
+                #end
+            }
+                #if($foreach.hasNext),#end
+            #end
+            }
+            }
+
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+    DependsOn:
+      - UploadImageAPIGatewayResource
+      - ImageUploadLambdaFunction
+
+  #API Gateway Resource definiton for Approve Image.
+  ApproveImageAPIGatewayResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      ParentId: !GetAtt
+        - APIGatewayRestAPI
+        - RootResourceId
+      PathPart: approve
+      RestApiId: !Ref APIGatewayRestAPI
+    DependsOn:
+      - APIGatewayRestAPI 
+
+  #GET method definition for image approve. 
+  ApproveImageAPIGatewayGETMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      HttpMethod: GET
+      ResourceId: !Ref ApproveImageAPIGatewayResource 
+      RestApiId: !Ref APIGatewayRestAPI
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        ContentHandling: CONVERT_TO_TEXT
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: ''
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+
+        Uri: !Sub 
+          - >- 
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${approveLambdaArn}/invocations
+          - approveLambdaArn: !GetAtt ApproveLambdaFunction.Arn
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        RequestTemplates:
+          application/json: |
+           #set($allParams = $input.params())
+            {
+            "body-json" : $input.json('$'),
+            "params" : {
+            #foreach($type in $allParams.keySet())
+                #set($params = $allParams.get($type))
+            "$type" : {
+                #foreach($paramName in $params.keySet())
+                "$paramName" : "$util.escapeJavaScript($params.get($paramName))"
+                    #if($foreach.hasNext),#end
+                #end
+            }
+                #if($foreach.hasNext),#end
+            #end
+            }
+            }
+
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+    DependsOn:
+      - ApproveImageAPIGatewayResource
+      - ApproveLambdaFunction 
+
+#API Gateway Resource definiton for getting metadata.
+  GetMetaDataAPIGatewayResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      ParentId: !GetAtt
+        - APIGatewayRestAPI
+        - RootResourceId
+      PathPart: getmetadata
+      RestApiId: !Ref APIGatewayRestAPI
+    DependsOn:
+      - APIGatewayRestAPI 
+
+  #GET method definition for getting metadata. 
+  GetMetaDataAPIGatewayGETMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      HttpMethod: GET
+      ResourceId: !Ref GetMetaDataAPIGatewayResource 
+      RestApiId: !Ref APIGatewayRestAPI
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        ContentHandling: CONVERT_TO_TEXT
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: ''
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+
+        Uri: !Sub 
+          - >- 
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${metadataLambdaArn}/invocations
+          - metadataLambdaArn: !GetAtt GetMetaDataLambdaFunction.Arn
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        RequestTemplates:
+          application/json: |
+           #set($allParams = $input.params())
+            {
+            "body-json" : $input.json('$'),
+            "params" : {
+            #foreach($type in $allParams.keySet())
+                #set($params = $allParams.get($type))
+            "$type" : {
+                #foreach($paramName in $params.keySet())
+                "$paramName" : "$util.escapeJavaScript($params.get($paramName))"
+                    #if($foreach.hasNext),#end
+                #end
+            }
+                #if($foreach.hasNext),#end
+            #end
+            }
+            }
+
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+    DependsOn:
+      - GetMetaDataAPIGatewayResource
+      - GetMetaDataLambdaFunction
+
+  #API Deployment
+  APIGatewayDeployment:
+    Type: 'AWS::ApiGateway::Deployment'
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      StageName: !Ref EnvironmentName
+    DependsOn:
+      - ImageUploadAPIGatewayPOSTMethod
+      - ApproveImageAPIGatewayGETMethod
+      - GetMetaDataAPIGatewayGETMethod
+  
+  #Lambda permission for image upload lambda
+  ImageUploadLambdaAPIGatewayPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !GetAtt  ImageUploadLambdaFunction.Arn
+      Principal: apigateway.amazonaws.com
+    DependsOn:
+      - APIGatewayDeployment
+  
+  #Lambda permission for image approve lambda
+  ApproveImageLambdaAPIGatewayPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !GetAtt  ApproveLambdaFunction.Arn
+      Principal: apigateway.amazonaws.com
+    DependsOn:
+      - APIGatewayDeployment
+  
+  #Lambda permission for metadata lambda
+  GetMetaDataLambdaAPIGatewayPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !GetAtt  GetMetaDataLambdaFunction.Arn
+      Principal: apigateway.amazonaws.com
+    DependsOn:
+      - APIGatewayDeployment
+  
+#Usage Plan for api.
+  APIUsagePlan:
+    Type: 'AWS::ApiGateway::UsagePlan'
+    Properties:
+      ApiStages:
+      Description: Usage Plan for API Usage limitation.
+      UsagePlanName: !Sub APILimit-${UsageName}
+      Throttle: 
+        BurstLimit: 5
+        RateLimit: 1
+      Quota:
+        Limit: 100
+        Period: MONTH
+      ApiStages:
+        - ApiId: !Ref APIGatewayRestAPI
+          Stage: !Ref EnvironmentName
+    DependsOn:
+      - APIGatewayDeployment
+      - ApiKey
+  
+  #API Details for usage plan.
+  APIUsagePlanKey:
+    Type: 'AWS::ApiGateway::UsagePlanKey'
+    Properties: 
+      KeyId: !Ref ApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref APIUsagePlan
+    DependsOn:
+      - ApiKey
+  
+  #API key definition for accessing API Gateway.
+  ApiKey:
+    Type: 'AWS::ApiGateway::ApiKey'
+    DependsOn:
+      - APIGatewayDeployment
+    Properties:
+      Name: API key
+      Description: CloudFormation API Key V1
+      Enabled: true
+      StageKeys:
+        - RestApiId: !Ref APIGatewayRestAPI
+          StageName: !Ref EnvironmentName
+  

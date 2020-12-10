@@ -1,0 +1,43 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Template for DyanamoDb Table Creation.
+Parameters:
+  DynamoDBTableName:  
+    Type: String
+    Description: Name of the Dynamodb Table. 
+    AllowedPattern: ^[a-zA-Z]+$
+    ConstraintDescription: Only letters allowed.
+    Default: PhotoMetadata
+  PrimaryKeyName:
+    Type: String
+    Description: Name of primary key.
+    AllowedPattern: ^[a-z]+$
+    ConstraintDescription: Only small letters allowed.
+    Default: imageid
+  BucketName:  
+    Type: String
+    Description: Name of the bucket. 
+    AllowedPattern: ^[a-z]+$
+    ConstraintDescription: Only small letters allowed.
+Resources:
+  DynamoDBTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      TableName: !Sub ${DynamoDBTableName}
+      AttributeDefinitions:
+        - AttributeName: !Sub ${PrimaryKeyName}
+          AttributeType: S
+      KeySchema:
+        - AttributeName: !Sub ${PrimaryKeyName}
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: '5'
+        WriteCapacityUnits: '5'
+  UploadBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Sub com-aks-bucket-uploadimage-${BucketName}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: TRUE
+        BlockPublicPolicy: TRUE
+        IgnorePublicAcls: TRUE
+        RestrictPublicBuckets: TRUE

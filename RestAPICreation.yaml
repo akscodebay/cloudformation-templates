@@ -1,0 +1,146 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Template for DyanamoDb Table Creation.
+Parameters:
+  APIName:  
+    Type: String
+    Description: Name of API. 
+    AllowedPattern: ^[a-zA-Z]+$
+    ConstraintDescription: Only letters allowed.
+    Default: ImageUpload
+  EnvironmentName:
+    Type: String
+    Description: Name of Stage.
+    AllowedPattern: ^[a-zA-Z]+$
+    ConstraintDescription: Only letters allowed.
+    Default: test
+  UsageName:
+    Type: String
+    Description: Name of Usage Plan.
+    AllowedPattern: ^[a-zA-Z]+$
+    ConstraintDescription: Only letters allowed.
+    Default: test
+Resources:
+  APIGatewayRestAPI:
+    Type: 'AWS::ApiGateway::RestApi'
+    Properties:
+      Description: Image Upload API and Store Metadata.
+      Name: !Sub ${APIName}
+      ApiKeySourceType: HEADER
+      BinaryMediaTypes:
+        - multipart/form-data
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+  APIGatewayResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      ParentId: !GetAtt
+        - APIGatewayRestAPI
+        - RootResourceId
+      PathPart: upload
+      RestApiId: !Ref APIGatewayRestAPI
+    DependsOn:
+      - APIGatewayRestAPI
+  APIGatewayMethod:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      HttpMethod: POST
+      ResourceId: !Ref APIGatewayResource 
+      RestApiId: !Ref APIGatewayRestAPI
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        ContentHandling: CONVERT_TO_TEXT
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: ''
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+
+        Uri: !Sub >- 
+          arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:ap-south-1:772827090549:function:File-uploader-lambda/invocations
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        RequestTemplates:
+          multipart/form-data: |
+            ##  See http://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-mapping-template-reference.html
+            ##  This template will pass through all parameters including path, querystring, header, stage variables, and context through to the integration endpoint via the body/payload
+            #set($allParams = $input.params())
+            {
+            "body" : "$input.body",
+            "params" : {
+            #foreach($type in $allParams.keySet())
+                #set($params = $allParams.get($type))
+            "$type" : {
+                #foreach($paramName in $params.keySet())
+                "$paramName" : "$util.escapeJavaScript($params.get($paramName))"
+                    #if($foreach.hasNext),#end
+                #end
+            }
+                #if($foreach.hasNext),#end
+            #end
+            }
+            }
+
+      MethodResponses:
+        - StatusCode: 200
+          ResponseModels:
+            application/json: Empty
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+    DependsOn:
+      - APIGatewayResource
+  APIGatewayDeployment:
+    Type: 'AWS::ApiGateway::Deployment'
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      StageName: !Ref EnvironmentName
+    DependsOn:
+      - APIGatewayMethod
+  APIGatewayPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: arn:aws:lambda:ap-south-1:772827090549:function:File-uploader-lambda 
+      Principal: apigateway.amazonaws.com
+    DependsOn:
+      - APIGatewayDeployment
+  APIUsagePlan:
+    Type: 'AWS::ApiGateway::UsagePlan'
+    Properties:
+      ApiStages:
+      Description: Usage Plan for API Usage limitation.
+      UsagePlanName: !Sub APILimit-${UsageName}
+      Throttle: 
+        BurstLimit: 5
+        RateLimit: 1
+      Quota:
+        Limit: 100
+        Period: MONTH
+      ApiStages:
+        - ApiId: !Ref APIGatewayRestAPI
+          Stage: !Ref EnvironmentName
+    DependsOn:
+      - APIGatewayDeployment
+      - ApiKey
+  APIUsagePlanKey:
+    Type: 'AWS::ApiGateway::UsagePlanKey'
+    Properties: 
+      KeyId: !Ref ApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref APIUsagePlan
+    DependsOn:
+      - ApiKey
+  ApiKey:
+    Type: 'AWS::ApiGateway::ApiKey'
+    DependsOn:
+      - APIGatewayDeployment
+    Properties:
+      Name: API key
+      Description: CloudFormation API Key V1
+      Enabled: true
+      StageKeys:
+        - RestApiId: !Ref APIGatewayRestAPI
+          StageName: !Ref EnvironmentName
